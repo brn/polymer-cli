@@ -14,10 +14,12 @@
 
 import {transform as babelTransform, TransformOptions as BabelTransformOptions} from 'babel-core';
 import * as cssSlam from 'css-slam';
+import {loadTsConfig, reportDiagnostics} from './load-tsconfig';
 import * as gulpif from 'gulp-if';
 import {minify as htmlMinify, Options as HTMLMinifierOptions} from 'html-minifier';
 import * as logging from 'plylog';
 import {Transform} from 'stream';
+import * as ts from 'typescript';
 
 
 const babelPresetES2015 = require('babel-preset-es2015');
@@ -41,6 +43,7 @@ export interface OptimizeOptions {
   html?: {minify?: boolean};
   css?: {minify?: boolean};
   js?: {minify?: boolean, compile?: boolean};
+  ts?: {es5?: boolean};
 }
 ;
 
@@ -52,13 +55,13 @@ export interface OptimizeOptions {
  * through unaffected.
  */
 export class GenericOptimizeTransform extends Transform {
-  optimizer: (content: string, options: any) => string;
+  optimizer: (content: string, options: any, file?: File) => string;
   optimizerName: string;
   optimizerOptions: any;
 
   constructor(
       optimizerName: string,
-      optimizer: (content: string, optimizerOptions: any) => string,
+      optimizer: (content: string, optimizerOptions: any, file?: File) => string,
       optimizerOptions: any) {
     super({objectMode: true});
     this.optimizer = optimizer;
@@ -80,7 +83,7 @@ export class GenericOptimizeTransform extends Transform {
     if (file.contents) {
       try {
         let contents = file.contents.toString();
-        contents = this.optimizer(contents, this.optimizerOptions);
+        contents = this.optimizer(contents, this.optimizerOptions, file);
         file.contents = new Buffer(contents);
       } catch (error) {
         logger.warn(
@@ -138,6 +141,35 @@ export class JSDefaultMinifyTransform extends JSBabelTransform {
 }
 
 /**
+ * JSBabelTransform uses babel to transpile Javascript, most often rewriting
+ * newer ECMAScript features to only use language features available in major
+ * browsers. If no options are given to the constructor, JSBabelTransform will
+ * use
+ * a babel's default "ES6 -> ES5" preset.
+ */
+class TSTransform extends GenericOptimizeTransform {
+  constructor() {
+    const config = loadTsConfig();
+    const transform = (contents: string, compilerOptions: ts.CompilerOptions, file: File) => {
+      const output = ts.transpileModule(contents, {compilerOptions, moduleName: file.path});
+      console.log(output);
+      if (output.diagnostics && output.diagnostics.length) {
+        reportDiagnostics(output.diagnostics);
+      }
+
+      if (output.sourceMapText) {
+        output.outputText += `//# sourceMappingURL=data:application/json;base64,${output.sourceMapText}`;
+      }
+
+      console.log(file.path);
+      return output.outputText;
+    };
+    super('.js', transform, config);
+  }
+}
+
+
+/**
  * CSSMinifyTransform minifies CSS that pass through it (via css-slam).
  */
 export class CSSMinifyTransform extends GenericOptimizeTransform {
@@ -192,10 +224,12 @@ export function getOptimizeStreams(options?: OptimizeOptions):
     NodeJS.ReadWriteStream[] {
   options = options || {};
   const streams = [];
-
+      console.log(options);
   // compile ES6 JavaScript using babel
   if (options.js && options.js.compile) {
     streams.push(gulpif(/\.js$/, new JSDefaultCompileTransform()));
+  } else if (options.ts) {
+    streams.push(gulpif(/\.ts$/, new TSTransform()));
   }
 
   // minify code (minify should always be the last transform)

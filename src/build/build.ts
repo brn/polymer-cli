@@ -23,7 +23,9 @@ import {forkStream, PolymerProject, addServiceWorker, SWConfig, HtmlSplitter} fr
 import {OptimizeOptions, getOptimizeStreams} from './optimize-streams';
 import {ProjectBuildOptions} from 'polymer-project-config';
 import {waitFor, pipeStreams} from './streams';
+import * as ts from 'typescript';
 import {loadServiceWorkerConfig} from './load-config';
+import {loadTsConfig} from './load-tsconfig';
 
 const logger = logging.getLogger('cli.build.build');
 export const mainBuildDirectoryName = 'build';
@@ -39,7 +41,7 @@ export async function build(
     polymerProject: PolymerProject): Promise<void> {
   const buildName = options.name || 'default';
   const optimizeOptions:
-      OptimizeOptions = {css: options.css, js: options.js, html: options.html};
+      OptimizeOptions = {css: options.css, js: options.js, ts: options.ts, html: options.html};
 
   // If no name is provided, write directly to the build/ directory.
   // If a build name is provided, write to that subdirectory.
@@ -60,9 +62,18 @@ export async function build(
   ]);
 
   const compiledToES5 = !!(optimizeOptions.js && optimizeOptions.js.compile);
+  const compiledToTS = !!optimizeOptions.ts;
   if (compiledToES5) {
     buildStream = buildStream.pipe(polymerProject.addBabelHelpersInEntrypoint())
                       .pipe(polymerProject.addCustomElementsEs5Adapter());
+  } else if (compiledToTS) {
+    buildStream = buildStream.pipe(polymerProject.addTypeScriptHelpersInEntryPoint());
+    const config = loadTsConfig();
+    if (!config.target
+        || config.target === 0
+        || config.target === ts.ScriptTarget.ES5) {
+      buildStream = buildStream.pipe(polymerProject.addCustomElementsEs5Adapter());
+    }
   }
 
   const bundled = !!(options.bundle);
